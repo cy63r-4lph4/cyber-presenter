@@ -129,7 +129,7 @@ export function TournamentControls() {
   const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds]);
 
   useEffect(() => {
-    socket.on("tournament:state", (incoming: TournamentState) => {
+    function handleTournamentState(incoming: TournamentState) {
       setState(incoming);
 
       if (
@@ -141,7 +141,6 @@ export function TournamentControls() {
         setSelectedMatchId(incoming.currentMatchId);
       }
 
-      // Auto-select when only one pending match exists
       if (
         ["bracket-reveal", "bracket-update"].includes(incoming.phase) &&
         incoming.bracket
@@ -153,16 +152,31 @@ export function TournamentControls() {
           setSelectedMatchId(pending[0].id);
         }
       }
-    });
+    }
 
+    function requestSync() {
+      socket.emit("tournament:state-request");
+      socket.emit("participants:request");
+    }
+
+    // Register listeners FIRST, then request state — so the response
+    // is never missed regardless of whether the socket is already connected.
+    socket.on("tournament:state", handleTournamentState);
     socket.on("participants:update", setJoinedParticipants);
-    socket.emit("participants:request");
-    // Ask server to resync tournament state (handles reconnects / refreshes)
-    socket.emit("tournament:state-request");
+
+    // Re-sync whenever the socket reconnects (e.g. server restart, network blip)
+    socket.on("connect", requestSync);
+
+    // Initial sync — fires immediately if already connected, or after
+    // the connect event fires if the socket is still establishing.
+    if (socket.connected) {
+      requestSync();
+    }
 
     return () => {
-      socket.off("tournament:state");
+      socket.off("tournament:state", handleTournamentState);
       socket.off("participants:update", setJoinedParticipants);
+      socket.off("connect", requestSync);
     };
   }, []);
 
