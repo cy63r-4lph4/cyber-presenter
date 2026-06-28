@@ -20,6 +20,7 @@ import type {
 } from "../../shared/types/Tournament";
 import { TOURNAMENT_INITIAL_STATE } from "../../shared/types/Tournament";
 import { QUESTION_BANK } from "../../data/questionBank";
+import { usePersistedState } from "../../hooks/usePersistedState";
 
 const QUESTIONS_PER_MATCH = 3;
 const DEFAULT_TIME_LIMIT = 20;
@@ -105,16 +106,28 @@ function TimeLimitSlider({
 }
 
 export function TournamentControls() {
+  // Server-authoritative state — always restored via socket on reconnect
   const [state, setState] = useState<TournamentState>(TOURNAMENT_INITIAL_STATE);
-
   const [joinedParticipants, setJoinedParticipants] = useState<
     { id: string; name: string }[]
   >([]);
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [selectedMatchId, setSelectedMatchId] = useState<string | null>(null);
-  const [timeLimit, setTimeLimit] = useState(DEFAULT_TIME_LIMIT);
 
-  // Replace the existing useEffect that listens to tournament:state
+  // Local UI state — persisted to sessionStorage so refreshes don't lose it
+  const [selectedIds, setSelectedIds] = usePersistedState<string[]>(
+    "tournament:selectedIds",
+    [],
+  );
+  const [selectedMatchId, setSelectedMatchId] = usePersistedState<
+    string | null
+  >("tournament:selectedMatchId", null);
+  const [timeLimit, setTimeLimit] = usePersistedState<number>(
+    "tournament:timeLimit",
+    DEFAULT_TIME_LIMIT,
+  );
+
+  // Convert the persisted array back to a Set for O(1) lookups
+  const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+
   useEffect(() => {
     socket.on("tournament:state", (incoming: TournamentState) => {
       setState(incoming);
@@ -128,7 +141,7 @@ export function TournamentControls() {
         setSelectedMatchId(incoming.currentMatchId);
       }
 
-      // ← ADD THIS: auto-select when only one pending match exists
+      // Auto-select when only one pending match exists
       if (
         ["bracket-reveal", "bracket-update"].includes(incoming.phase) &&
         incoming.bracket
@@ -144,6 +157,8 @@ export function TournamentControls() {
 
     socket.on("participants:update", setJoinedParticipants);
     socket.emit("participants:request");
+    // Ask server to resync tournament state (handles reconnects / refreshes)
+    socket.emit("tournament:state-request");
 
     return () => {
       socket.off("tournament:state");
@@ -179,16 +194,16 @@ export function TournamentControls() {
 
   function toggleParticipant(id: string) {
     setSelectedIds((prev) => {
-      const n = new Set(prev);
-      n.has(id) ? n.delete(id) : n.add(id);
-      return n;
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return [...next];
     });
     vibrate();
   }
 
   function initTournament() {
     const participants = joinedParticipants.filter((p) =>
-      selectedIds.has(p.id),
+      selectedIdSet.has(p.id),
     );
     if (participants.length < 2) return;
     socket.emit("tournament:init", participants);
@@ -217,11 +232,11 @@ export function TournamentControls() {
   function resetTournament() {
     socket.emit("tournament:reset");
     setSelectedMatchId(null);
+    setSelectedIds([]);
     vibrate();
   }
 
-  // ── IDLE — before the presenter has activated the arena ──────────────────
-  // Just shows an "Enter Arena" button. Nothing is visible on Display yet.
+  // ── IDLE ──────────────────────────────────────────────────────────────────
   if (phase === "idle") {
     return (
       <div className="space-y-4 font-mono">
@@ -257,9 +272,9 @@ export function TournamentControls() {
     );
   }
 
-  // ── LOBBY — arena is on Display, presenter is setting up contestants ──────
+  // ── LOBBY ─────────────────────────────────────────────────────────────────
   if (phase === "lobby") {
-    const selected = joinedParticipants.filter((p) => selectedIds.has(p.id));
+    const selected = joinedParticipants.filter((p) => selectedIdSet.has(p.id));
     return (
       <div className="space-y-4 font-mono">
         <div className="flex items-center gap-2 border-b border-slate-800/80 pb-3">
@@ -286,7 +301,7 @@ export function TournamentControls() {
             </p>
             <button
               onClick={() =>
-                setSelectedIds(new Set(joinedParticipants.map((p) => p.id)))
+                setSelectedIds(joinedParticipants.map((p) => p.id))
               }
               className="text-[10px] text-cyan-400 font-bold"
             >
@@ -303,7 +318,7 @@ export function TournamentControls() {
                 <button
                   key={p.id}
                   onClick={() => toggleParticipant(p.id)}
-                  className={`flex items-center gap-2 rounded-xl border px-2.5 py-1.5 text-left transition active:scale-[0.98] ${selectedIds.has(p.id) ? "border-cyan-400/40 bg-cyan-950/20" : "border-slate-800 bg-slate-900/20"}`}
+                  className={`flex items-center gap-2 rounded-xl border px-2.5 py-1.5 text-left transition active:scale-[0.98] ${selectedIdSet.has(p.id) ? "border-cyan-400/40 bg-cyan-950/20" : "border-slate-800 bg-slate-900/20"}`}
                 >
                   <img
                     src={dicebearUrl(p.name)}
@@ -313,7 +328,7 @@ export function TournamentControls() {
                   <span className="flex-1 text-[11px] font-bold text-slate-300">
                     {p.name}
                   </span>
-                  {selectedIds.has(p.id) && (
+                  {selectedIdSet.has(p.id) && (
                     <CheckCircle2
                       size={12}
                       className="text-cyan-400 shrink-0"
@@ -500,7 +515,7 @@ export function TournamentControls() {
     );
   }
 
-  // ── MATCH ACTIVE ────────────────────────────────────────────────────────────
+  // ── MATCH ACTIVE ───────────────────────────────────────────────────────────
   if (phase === "match-active" && liveMatch) {
     const q = state.currentQuestion;
     return (
@@ -561,7 +576,7 @@ export function TournamentControls() {
     );
   }
 
-  // ── QUESTION RESULT ─────────────────────────────────────────────────────────
+  // ── QUESTION RESULT ────────────────────────────────────────────────────────
   if (phase === "question-result" && liveMatch) {
     const q = state.currentQuestion;
     const questionsLeft = QUESTIONS_PER_MATCH - liveMatch.questionsCompleted;
@@ -622,7 +637,7 @@ export function TournamentControls() {
     );
   }
 
-  // ── MATCH RESULT ────────────────────────────────────────────────────────────
+  // ── MATCH RESULT ───────────────────────────────────────────────────────────
   if (phase === "match-result" && liveMatch) {
     const winner =
       liveMatch.winnerId === liveMatch.playerA.id
@@ -743,7 +758,7 @@ export function TournamentControls() {
     );
   }
 
-  // ── CHAMPION ─────────────────────────────────────────────────────────────────
+  // ── CHAMPION ──────────────────────────────────────────────────────────────
   if (phase === "champion") {
     return (
       <div className="space-y-4 font-mono">
@@ -779,7 +794,7 @@ export function TournamentControls() {
     );
   }
 
-  // ── Fallback after refresh into unexpected phase ──────────────────────────
+  // ── Fallback ──────────────────────────────────────────────────────────────
   return (
     <div className="space-y-3 font-mono">
       <div className="flex items-center gap-2 rounded-xl border border-amber-400/20 bg-amber-950/10 p-3">

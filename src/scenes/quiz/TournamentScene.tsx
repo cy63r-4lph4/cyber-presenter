@@ -1222,7 +1222,7 @@ function ChampionScene({ state }: { state: TournamentState }) {
           {champion.name}
         </h1>
         <p className="mt-4 text-2xl font-bold text-amber-300 uppercase tracking-widest">
-          Cybersecurity Champion
+          Cyber Guardian
         </p>
       </motion.div>
 
@@ -1303,7 +1303,7 @@ export function TournamentScene({ state }: { state: TournamentState }) {
               [ ARENA_STANDING_BY ]
             </p>
             <h1 className="mt-4 text-5xl font-black uppercase text-white">
-              The Great Cyber Quiz
+              The Cyber Survival Tournament
             </h1>
             <p className="mt-6 text-slate-500 text-sm">
               Contestants — the trainer is setting up the bracket

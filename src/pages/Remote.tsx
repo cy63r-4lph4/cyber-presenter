@@ -37,6 +37,7 @@ import {
   QUIZ_CATEGORIES,
   type QuizCategory,
 } from "../data/quizBank";
+import { usePersistedState } from "../hooks/usePersistedState";
 
 type PresentationState = {
   currentSlide: number;
@@ -111,8 +112,10 @@ export function Remote() {
   const [connected, setConnected] = useState(socket.connected);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
-  const [activePanel, setActivePanel] = useState<RemotePanel>("slides");
-
+  const [activePanel, setActivePanel] = usePersistedState<RemotePanel>(
+    "remote:activePanel",
+    "slides",
+  );
   const [question, setQuestion] = useState<LiveQuestion | null>(null);
   const [answers, setAnswers] = useState<AudienceAnswer[]>([]);
   const [audienceQuestions, setAudienceQuestions] = useState<
