@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { ArrowRight,  ShieldAlert, Terminal } from "lucide-react";
+import { ArrowRight, ShieldAlert, Terminal } from "lucide-react";
 import { socket } from "../socket";
 import { scenes, getScene } from "../scenes/sceneRegistry";
 import { getAccentGradient } from "../scenes/accent";
@@ -21,6 +21,7 @@ import { TOURNAMENT_INITIAL_STATE } from "../shared/types/Tournament";
 import type { TournamentState } from "../shared/types/Tournament";
 import { TournamentScene } from "../scenes/quiz/TournamentScene";
 import { PinnedQuestionDisplay } from "../scenes/Shared/PinnedQuestionDisplay";
+import { useTournamentAudio } from "../hooks/useTournamentAudio";
 
 export function Display() {
   const [state, setState] = useState<PresentationState>({
@@ -41,6 +42,8 @@ export function Display() {
     TOURNAMENT_INITIAL_STATE,
   );
   const [qrSvg, setQrSvg] = useState<string>("");
+  const { unlocked } = useTournamentAudio(tournamentState.phase);
+  console.log("Tournament audio unlocked:", unlocked);
 
   const audienceUrl = useMemo(() => {
     if (typeof window === "undefined") return "";
@@ -300,8 +303,6 @@ export function Display() {
         </AnimatePresence>
 
         <div className="relative my-8 flex flex-1 flex-col justify-center">
-          
-
           <AnimatePresence mode="wait">
             {shouldShowTournament ? (
               <motion.div

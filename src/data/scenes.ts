@@ -16,6 +16,7 @@ import { SocialEngineeringScene } from "../scenes/Human/SocialEngineeringScene";
 import { SocialEngineeringControls } from "../scenes/Human/SocialEngineeringControls";
 import { IncidentResponseScene } from "../scenes/response/InscidenceResponseScene";
 import { IncidentResponseControls } from "../scenes/response/IncidentResponseControls";
+import { ClosingScene } from "../scenes/closing/closingScene";
 
 export const scenes: SceneEntry[] = [
   {
@@ -60,11 +61,13 @@ export const scenes: SceneEntry[] = [
     controls: SocialEngineeringControls,
   },
 
- 
-{
-  navLabel: "Incident Response",
-  component: IncidentResponseScene,
-  controls: IncidentResponseControls,
-},
- 
+  {
+    navLabel: "Incident Response",
+    component: IncidentResponseScene,
+    controls: IncidentResponseControls,
+  },
+  {
+    navLabel: "Closing",
+    component: ClosingScene,
+  },
 ];

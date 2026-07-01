@@ -178,7 +178,6 @@ function BracketMatchCard({
 //
 // Draws an L-shaped connector from each pair of round-r matches up into
 // their round-(r+1) parent, animated as a draw-in trace synced to reveal.
-
 function BracketConnectors({
   rounds,
   positions,
@@ -195,27 +194,40 @@ function BracketConnectors({
   for (let r = 0; r < rounds.length - 1; r++) {
     const parentRound = positions[r + 1];
     const childRound = positions[r];
-    const xChild = r * (BRACKET_COL_W + BRACKET_COL_GAP) + BRACKET_COL_W / 2;
-    const xParent =
-      (r + 1) * (BRACKET_COL_W + BRACKET_COL_GAP) + BRACKET_COL_W / 2;
-    const xMid = xChild + (BRACKET_COL_W + BRACKET_COL_GAP) / 2;
+
+    // Child cards: right edge of column r
+    const xChildEdge =
+      r * (BRACKET_COL_W + BRACKET_COL_GAP) + BRACKET_COL_W - 16;
+    // Parent cards: left edge of column r+1
+    const xParentEdge = (r + 1) * (BRACKET_COL_W + BRACKET_COL_GAP) + 16;
+    // Midpoint of the horizontal gap
+    const xMid = (xChildEdge + xParentEdge) / 2;
 
     const isDrawn = r + 1 < revealedRounds;
 
     for (let i = 0; i < parentRound.length; i++) {
-      const yParent = parentRound[i];
-      const yChildA = childRound[i * 2];
-      const yChildB = childRound[i * 2 + 1];
+      const yParent = height - parentRound[i];
+      const yChildA = height - childRound[i * 2];
+      const yChildB = height - childRound[i * 2 + 1];
 
+      // Two children merge into one parent:
+      //   child A → right → mid → down/up to parent y → parent left edge
+      //   child B → right → mid → up/down to parent y → (shares final segment)
       [yChildA, yChildB].forEach((yChild, j) => {
-        const d = `M ${xChild} ${height - yChild} H ${xMid} V ${height - yParent} H ${xParent}`;
+        const d = [
+          `M ${xChildEdge} ${yChild}`, // start at right edge of child card
+          `H ${xMid}`, // go right to midpoint
+          `V ${yParent}`, // go up or down to parent's y
+          `H ${xParentEdge}`, // arrive at left edge of parent card
+        ].join(" ");
+
         paths.push(
           <motion.path
             key={`r${r}-${i}-${j}`}
             d={d}
             fill="none"
             stroke="rgba(100,116,139,0.45)"
-            strokeWidth="2"
+            strokeWidth="1.5"
             initial={{ pathLength: 0, opacity: 0 }}
             animate={{
               pathLength: isDrawn ? 1 : 0,
@@ -228,10 +240,13 @@ function BracketConnectors({
     }
   }
 
+  const totalWidth =
+    rounds.length * (BRACKET_COL_W + BRACKET_COL_GAP) - BRACKET_COL_GAP;
+
   return (
     <svg
       className="absolute inset-0 pointer-events-none"
-      width={rounds.length * (BRACKET_COL_W + BRACKET_COL_GAP)}
+      width={totalWidth}
       height={height}
       style={{ overflow: "visible" }}
     >
@@ -630,7 +645,11 @@ function SeedingReveal({ state }: { state: TournamentState }) {
       doOneSwap();
       if (count >= numSwaps) {
         clearInterval(interval);
-        setTimeout(() => setStage("locked"), 700);
+        setTimeout(() => {
+          setMatches(initialMatches); // ← restore server truth
+          setActiveSwap(null);
+          setStage("locked");
+        }, 700);
       }
     }, 700);
 
