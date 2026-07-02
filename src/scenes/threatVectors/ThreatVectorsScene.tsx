@@ -252,9 +252,7 @@ export function ThreatVectorsScene({ sceneStep }: SceneProps) {
             <h1 className="text-5xl font-extrabold tracking-tight text-cyan-400 uppercase leading-tight">
               your weakest wall?
             </h1>
-            <p className="mt-8 text-sm text-slate-500 uppercase tracking-widest">
-              Trainer: launch this as a live question or quiz from Remote
-            </p>
+            
           </motion.div>
         )}
       </AnimatePresence>

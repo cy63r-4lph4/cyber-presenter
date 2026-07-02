@@ -2,12 +2,16 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { Trophy, Swords, Crown } from "lucide-react";
 
-import type {
-  TournamentState,
-  TournamentMatch,
+import {
+  type TournamentState,
+  type TournamentMatch,
+  MATCH_COUNTDOWN_MS,
 } from "../../shared/types/Tournament";
+import { socket } from "../../socket";
 
 const optionLetters = ["A", "B", "C", "D"];
+
+
 
 function dicebearUrl(name: string, style = "adventurer") {
   const seed = encodeURIComponent(name);
@@ -360,14 +364,15 @@ function useBracketAutoFocus(
 function BracketDisplay({
   state,
   revealProgress,
+  scrollRef,
 }: {
   state: TournamentState;
   revealProgress: number;
+  scrollRef: React.RefObject<HTMLDivElement | null>;
 }) {
   const bracket = state.bracket;
   const { positions, height } = useBracketLayout(bracket?.rounds ?? []);
-  const containerRef = useRef<HTMLDivElement>(null);
-
+  const containerRef = scrollRef;
   const revealedRounds = bracket
     ? Math.ceil(revealProgress * bracket.rounds.length)
     : 0;
@@ -408,7 +413,7 @@ function BracketDisplay({
   return (
     <div
       ref={containerRef}
-      className="w-full h-full overflow-x-auto overflow-y-auto flex items-center justify-center scroll-smooth"
+      className="w-full h-full overflow-x-auto overflow-y-auto flex items-center justify-center scroll-smooth [&::-webkit-scrollbar]:hidden [scrollbar-width:none] [-ms-overflow-style:none]"
     >
       <div
         className="relative shrink-0"
@@ -767,7 +772,10 @@ function SeedingReveal({ state }: { state: TournamentState }) {
 // ── Match Arena ─────────────────────────────────────────────────────────────
 
 function MatchArena({ state }: { state: TournamentState }) {
-  const [timeLeft, setTimeLeft] = useState<number>(0);
+  // Single ticking clock drives both the pre-match countdown and the
+  // in-question answer timer. See the MATCH_COUNTDOWN_MS / server note at
+  // the top of this file and in AudienceTournament.tsx.
+  const [now, setNow] = useState<number>(() => Date.now());
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const match = useMemo(() => {
@@ -789,20 +797,10 @@ function MatchArena({ state }: { state: TournamentState }) {
   }, [state]);
 
   useEffect(() => {
-    if (
-      state.phase !== "match-active" ||
-      !state.currentQuestion ||
-      !state.matchStartedAt
-    )
-      return;
+    if (state.phase !== "match-active" || !state.matchStartedAt) return;
 
-    const end = state.matchStartedAt + state.currentQuestion.timeLimit * 1000;
-
-    timerRef.current = setInterval(() => {
-      const remaining = Math.max(0, end - Date.now());
-      setTimeLeft(remaining);
-      if (remaining === 0 && timerRef.current) clearInterval(timerRef.current);
-    }, 50);
+    setNow(Date.now());
+    timerRef.current = setInterval(() => setNow(Date.now()), 100);
 
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
@@ -812,8 +810,19 @@ function MatchArena({ state }: { state: TournamentState }) {
   if (!match || !state.currentQuestion) return null;
 
   const q = state.currentQuestion;
-  const timeLimit = q.timeLimit * 1000;
-  const timePct = timeLimit > 0 ? (timeLeft / timeLimit) * 100 : 0;
+  const timeLimitMs = q.timeLimit * 1000;
+  const msUntilStart = state.matchStartedAt ? state.matchStartedAt - now : 0;
+  const isCountingDown = msUntilStart > 0;
+  const countdownSeconds = Math.max(1, Math.ceil(msUntilStart / 1000));
+  const matchEndAt = state.matchStartedAt
+    ? state.matchStartedAt + timeLimitMs
+    : 0;
+  const timeLeft = isCountingDown ? timeLimitMs : Math.max(0, matchEndAt - now);
+  const timePct = isCountingDown
+    ? Math.min(100, Math.max(0, (msUntilStart / MATCH_COUNTDOWN_MS) * 100))
+    : timeLimitMs > 0
+      ? (timeLeft / timeLimitMs) * 100
+      : 0;
   const answeredIds = new Set(state.matchAnswers.map((a) => a.participantId));
   const aAnswered = answeredIds.has(match.playerA.id);
   const bAnswered = answeredIds.has(match.playerB.id);
@@ -875,7 +884,8 @@ function MatchArena({ state }: { state: TournamentState }) {
             VS
           </p>
 
-          {/* Countdown ring */}
+          {/* Countdown / answer-timer ring — same ring drives both, so it
+              reads as one continuous piece of UI as the match begins */}
           <div className="relative flex items-center justify-center">
             <svg width="64" height="64" className="-rotate-90">
               <circle
@@ -908,7 +918,7 @@ function MatchArena({ state }: { state: TournamentState }) {
               />
             </svg>
             <span className="absolute text-base font-black text-white">
-              {Math.ceil(timeLeft / 1000)}
+              {isCountingDown ? countdownSeconds : Math.ceil(timeLeft / 1000)}
             </span>
           </div>
         </div>
@@ -941,34 +951,56 @@ function MatchArena({ state }: { state: TournamentState }) {
         </motion.div>
       </div>
 
-      {/* Question */}
+      {/* Question / countdown */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.3 }}
         className="rounded-3xl border border-cyan-400/20 bg-slate-900/60 p-6"
       >
-        <p className="text-xs uppercase tracking-[0.3em] text-cyan-400 font-black mb-4">
-          Question
-        </p>
-        <p className="text-2xl font-black text-white leading-snug mb-6">
-          {q.prompt}
-        </p>
-        <div className="grid grid-cols-2 gap-3">
-          {q.options.map((option, idx) => (
-            <div
-              key={idx}
-              className="flex items-center gap-3 rounded-xl border border-slate-700/50 bg-slate-800/40 px-4 py-3"
-            >
-              <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-slate-700/60 text-sm font-black text-slate-300">
-                {optionLetters[idx]}
-              </span>
-              <span className="text-sm font-semibold text-slate-200">
-                {option}
-              </span>
+        {isCountingDown ? (
+          <div className="flex flex-col items-center justify-center gap-4 py-10">
+            <p className="text-xs uppercase tracking-[0.4em] text-cyan-400 font-black">
+              Showdown Starts In
+            </p>
+            <AnimatePresence mode="wait">
+              <motion.div
+                key={countdownSeconds}
+                initial={{ scale: 0.3, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                exit={{ scale: 1.6, opacity: 0 }}
+                transition={{ duration: 0.4, ease: "easeOut" }}
+                className="text-8xl font-black text-cyan-300"
+              >
+                {countdownSeconds}
+              </motion.div>
+            </AnimatePresence>
+          </div>
+        ) : (
+          <>
+            <p className="text-xs uppercase tracking-[0.3em] text-cyan-400 font-black mb-4">
+              Question
+            </p>
+            <p className="text-2xl font-black text-white leading-snug mb-6">
+              {q.prompt}
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              {q.options.map((option, idx) => (
+                <div
+                  key={idx}
+                  className="flex items-center gap-3 rounded-xl border border-slate-700/50 bg-slate-800/40 px-4 py-3"
+                >
+                  <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-slate-700/60 text-sm font-black text-slate-300">
+                    {optionLetters[idx]}
+                  </span>
+                  <span className="text-sm font-semibold text-slate-200">
+                    {option}
+                  </span>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
+          </>
+        )}
       </motion.div>
     </div>
   );
@@ -1111,8 +1143,6 @@ function MatchResult({ state }: { state: TournamentState }) {
     match.winnerId === match.playerA.id ? match.playerA : match.playerB;
   const loser =
     match.winnerId === match.playerA.id ? match.playerB : match.playerA;
-  // const aScore = match.scores[match.playerA.id] ?? 0;
-  // const bScore = match.scores[match.playerB.id] ?? 0;
 
   return (
     <div className="w-full max-w-3xl mx-auto flex flex-col items-center gap-8">
@@ -1279,6 +1309,45 @@ function ChampionScene({ state }: { state: TournamentState }) {
 
 export function TournamentScene({ state }: { state: TournamentState }) {
   const [revealProgress, setRevealProgress] = useState(0);
+  const bracketScrollRef = useRef<HTMLDivElement>(null);
+  const seedingScrollRef = useRef<HTMLDivElement>(null);
+
+  const phaseRef = useRef(state.phase);
+  phaseRef.current = state.phase;
+
+  useEffect(() => {
+    function handleScroll(payload: {
+      dx?: number;
+      dy?: number;
+      reset?: boolean;
+    }) {
+      const el =
+        phaseRef.current === "seeding"
+          ? seedingScrollRef.current
+          : bracketScrollRef.current;
+      if (!el) return;
+
+      if (payload.reset) {
+        el.scrollTo({
+          left: (el.scrollWidth - el.clientWidth) / 2,
+          top: (el.scrollHeight - el.clientHeight) / 2,
+          behavior: "smooth",
+        });
+        return;
+      }
+
+      el.scrollBy({
+        left: payload.dx ?? 0,
+        top: payload.dy ?? 0,
+        behavior: "auto",
+      });
+    }
+
+    socket.on("tournament:scroll", handleScroll);
+    return () => {
+      socket.off("tournament:scroll", handleScroll);
+    };
+  }, []);
 
   // Animate bracket reveal column by column
   useEffect(() => {
@@ -1341,10 +1410,11 @@ export function TournamentScene({ state }: { state: TournamentState }) {
         {phase === "seeding" && (
           <motion.div
             key="seeding"
+            ref={seedingScrollRef}
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="w-full"
+            className="w-full h-full overflow-y-auto overflow-x-hidden scroll-smooth [&::-webkit-scrollbar]:hidden [scrollbar-width:none] [-ms-overflow-style:none]"
           >
             <SeedingReveal state={state} />
           </motion.div>
@@ -1362,7 +1432,11 @@ export function TournamentScene({ state }: { state: TournamentState }) {
             <p className="text-center text-sm uppercase tracking-[0.4em] text-cyan-400 font-black mb-6">
               [ THE_BRACKET ]
             </p>
-            <BracketDisplay state={state} revealProgress={revealProgress} />
+            <BracketDisplay
+              state={state}
+              revealProgress={revealProgress}
+              scrollRef={bracketScrollRef}
+            />
           </motion.div>
         )}
 
@@ -1418,7 +1492,11 @@ export function TournamentScene({ state }: { state: TournamentState }) {
             <p className="text-center text-sm uppercase tracking-[0.4em] text-amber-400 font-black mb-6 animate-pulse">
               [ ADVANCING_WINNERS ]
             </p>
-            <BracketDisplay state={state} revealProgress={1} />
+            <BracketDisplay
+              state={state}
+              revealProgress={1}
+              scrollRef={bracketScrollRef}
+            />
           </motion.div>
         )}
 

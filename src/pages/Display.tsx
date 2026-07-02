@@ -47,7 +47,8 @@ export function Display() {
 
   const audienceUrl = useMemo(() => {
     if (typeof window === "undefined") return "";
-    return `${window.location.protocol}//${window.location.host}/audience`;
+    // return `${window.location.protocol}//${window.location.host}/audience`;
+    return "https://cyber-presenter.vercel.app/audience";
   }, []);
 
   useEffect(() => {
@@ -302,7 +303,7 @@ export function Display() {
           )}
         </AnimatePresence>
 
-        <div className="relative my-8 flex flex-1 flex-col justify-center">
+        <div className="relative my-8 flex flex-1 min-h-0 flex-col justify-center">
           <AnimatePresence mode="wait">
             {shouldShowTournament ? (
               <motion.div

@@ -26,9 +26,26 @@
  *       />
  *     );
  *   }
+ *
+ * ── PRE-MATCH COUNTDOWN — REQUIRED SERVER CHANGE ────────────────────────────
+ * The 3-2-1 countdown shown here is driven entirely by `state.matchStartedAt`.
+ * There is no new phase and no new field — the server just needs to set
+ * `matchStartedAt` to a few seconds in the FUTURE instead of "now" whenever
+ * a showdown (or the next question within one) begins:
+ *
+ *   // in the tournament:start-match and tournament:next-question handlers
+ *   matchStartedAt: Date.now() + MATCH_COUNTDOWN_MS   // was: Date.now()
+ *
+ * Clients then derive everything else:
+ *   - while Date.now() < matchStartedAt      → show the 3-2-1 countdown
+ *   - once Date.now() >= matchStartedAt      → show the question + answer timer
+ *   - the answer timer still ends at matchStartedAt + currentQuestion.timeLimit*1000
+ *
+ * MATCH_COUNTDOWN_MS below must match the value used on the server.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { AnimatePresence, motion } from "framer-motion";
 import {
   CheckCircle2,
   Crown,
@@ -37,7 +54,7 @@ import {
   XCircle,
   Shield,
 } from "lucide-react";
-import type { TournamentState } from "../../shared/types/Tournament";
+import { MATCH_COUNTDOWN_MS, type TournamentState } from "../../shared/types/Tournament";
 import { socket } from "../../socket";
 
 type Participant = {
@@ -46,6 +63,8 @@ type Participant = {
 };
 
 const optionLetters = ["A", "B", "C", "D"];
+
+
 
 function dicebearUrl(name: string) {
   return `https://api.dicebear.com/7.x/adventurer/svg?seed=${encodeURIComponent(name)}&backgroundColor=0f172a&radius=50`;
@@ -69,9 +88,18 @@ function TimeRing({ pct, seconds }: { pct: number; seconds: number }) {
   return (
     <div className="relative flex items-center justify-center">
       <svg width="88" height="88" className="-rotate-90">
-        <circle cx="44" cy="44" r={r} fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth="5" />
         <circle
-          cx="44" cy="44" r={r}
+          cx="44"
+          cy="44"
+          r={r}
+          fill="none"
+          stroke="rgba(255,255,255,0.06)"
+          strokeWidth="5"
+        />
+        <circle
+          cx="44"
+          cy="44"
+          r={r}
           fill="none"
           stroke={color}
           strokeWidth="5"
@@ -86,6 +114,36 @@ function TimeRing({ pct, seconds }: { pct: number; seconds: number }) {
   );
 }
 
+// ── Pre-match countdown burst ─────────────────────────────────────────────
+
+function CountdownBurst({
+  seconds,
+  label = "Get Ready",
+}: {
+  seconds: number;
+  label?: string;
+}) {
+  return (
+    <div className="flex flex-col items-center justify-center gap-3 py-10">
+      <p className="text-xs font-bold uppercase tracking-[0.3em] text-cyan-400">
+        {label}
+      </p>
+      <AnimatePresence mode="wait">
+        <motion.div
+          key={seconds}
+          initial={{ scale: 0.4, opacity: 0 }}
+          animate={{ scale: 1, opacity: 1 }}
+          exit={{ scale: 1.4, opacity: 0 }}
+          transition={{ duration: 0.35, ease: "easeOut" }}
+          className="text-7xl font-black text-cyan-300"
+        >
+          {seconds}
+        </motion.div>
+      </AnimatePresence>
+    </div>
+  );
+}
+
 // ── Main exported component ──────────────────────────────────────────────────
 
 export function AudienceTournament({
@@ -96,8 +154,7 @@ export function AudienceTournament({
   participant: Participant;
 }) {
   const [myVoteIndex, setMyVoteIndex] = useState<number | null>(null);
-  const [timeLeft, setTimeLeft] = useState(0);
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [now, setNow] = useState(() => Date.now());
 
   // Reset vote when a new match/question starts
   const questionId = state.currentQuestion?.id;
@@ -105,18 +162,27 @@ export function AudienceTournament({
     setMyVoteIndex(null);
   }, [questionId]);
 
-  // Timer
+  // Single ticking clock drives both the pre-match countdown and the
+  // in-question answer timer — see the file header for how matchStartedAt
+  // is used to distinguish the two.
   useEffect(() => {
-    if (state.phase !== "match-active" || !state.currentQuestion || !state.matchStartedAt) return;
+    if (state.phase !== "match-active" || !state.matchStartedAt) return;
 
-    const end = state.matchStartedAt + state.currentQuestion.timeLimit * 1000;
+    setNow(Date.now());
+    const id = setInterval(() => setNow(Date.now()), 100);
+    return () => clearInterval(id);
+  }, [questionId, state.matchStartedAt, state.phase]);
 
-    timerRef.current = setInterval(() => {
-      setTimeLeft(Math.max(0, end - Date.now()));
-    }, 50);
-
-    return () => { if (timerRef.current) clearInterval(timerRef.current); };
-  }, [questionId, state.matchStartedAt]);
+  const timeLimitMs = state.currentQuestion
+    ? state.currentQuestion.timeLimit * 1000
+    : 0;
+  const msUntilStart = state.matchStartedAt ? state.matchStartedAt - now : 0;
+  const isCountingDown = msUntilStart > 0;
+  const countdownSeconds = Math.max(1, Math.ceil(msUntilStart / 1000));
+  const matchEndAt = state.matchStartedAt
+    ? state.matchStartedAt + timeLimitMs
+    : 0;
+  const timeLeft = isCountingDown ? timeLimitMs : Math.max(0, matchEndAt - now);
 
   // Derived: am I a combatant in the current match?
   const currentMatch = useMemo(() => {
@@ -133,27 +199,33 @@ export function AudienceTournament({
       currentMatch.playerB.id === participant.id
     : false;
 
-  const myOpponent = iAmCombatant && currentMatch
-    ? currentMatch.playerA.id === participant.id
-      ? currentMatch.playerB
-      : currentMatch.playerA
-    : null;
+  const myOpponent =
+    iAmCombatant && currentMatch
+      ? currentMatch.playerA.id === participant.id
+        ? currentMatch.playerB
+        : currentMatch.playerA
+      : null;
 
   const iWon = currentMatch?.winnerId === participant.id;
-  // const iLost = currentMatch?.winnerId && currentMatch.winnerId !== participant.id && iAmCombatant;
   const iAmChampion = state.championId === participant.id;
 
   const roundIndex = useMemo(() => {
     if (!state.bracket || !state.currentMatchId) return 0;
     for (let i = 0; i < state.bracket.rounds.length; i++) {
-      if (state.bracket.rounds[i].some((m) => m.id === state.currentMatchId)) return i;
+      if (state.bracket.rounds[i].some((m) => m.id === state.currentMatchId))
+        return i;
     }
     return 0;
   }, [state.bracket, state.currentMatchId]);
 
   function submitAnswer(optionIndex: number) {
-    if (!state.currentQuestion || myVoteIndex !== null || !state.currentQuestion) return;
-    if (state.phase !== "match-active") return;
+    if (
+      !state.currentQuestion ||
+      myVoteIndex !== null ||
+      isCountingDown ||
+      state.phase !== "match-active"
+    )
+      return;
 
     setMyVoteIndex(optionIndex);
     socket.emit("tournament:answer", {
@@ -164,10 +236,21 @@ export function AudienceTournament({
   }
 
   // ── IDLE / SEEDING ────────────────────────────────────────────────────────
-  if (state.phase === "idle" || state.phase === "lobby" || state.phase === "seeding") {
+  if (
+    state.phase === "idle" ||
+    state.phase === "lobby" ||
+    state.phase === "seeding"
+  ) {
     const myMatch = state.bracket?.rounds[0]?.find(
       (m) => m.playerA.id === participant.id || m.playerB.id === participant.id,
     );
+    const iAmInBracket = !!myMatch;
+    const myMatchOpponent = myMatch
+      ? myMatch.playerA.id === participant.id
+        ? myMatch.playerB
+        : myMatch.playerA
+      : null;
+    const opponentIsBye = myMatchOpponent?.name === "BYE";
 
     return (
       <main className="min-h-screen bg-[#07080b] px-5 py-8 text-white">
@@ -177,14 +260,14 @@ export function AudienceTournament({
             {state.phase === "lobby" ? "Arena Opening" : "Tournament Starting"}
           </div>
 
-          <h1 className="text-3xl font-black">The Great Cyber Quiz</h1>
+          <h1 className="text-3xl font-black">The Cyber Survival Tournament</h1>
           <p className="mt-2 text-slate-400 text-sm">
             {state.phase === "lobby"
               ? "The arena is being prepared. Stand by for your matchup."
               : "The bracket is being drawn. Get ready for battle."}
           </p>
 
-          {myMatch && (
+          {myMatch && myMatchOpponent && !opponentIsBye && (
             <div className="mt-8 rounded-3xl border border-amber-400/20 bg-amber-950/10 p-6">
               <p className="text-xs font-bold uppercase tracking-[0.2em] text-amber-300 mb-4">
                 Your First Matchup
@@ -196,32 +279,60 @@ export function AudienceTournament({
                     alt={participant.name}
                     className="h-16 w-16 rounded-full border-2 border-cyan-400"
                   />
-                  <p className="text-sm font-black text-white text-center">{participant.name}</p>
-                  <span className="text-[10px] font-bold text-cyan-400 uppercase tracking-widest">You</span>
+                  <p className="text-sm font-black text-white text-center">
+                    {participant.name}
+                  </p>
+                  <span className="text-[10px] font-bold text-cyan-400 uppercase tracking-widest">
+                    You
+                  </span>
                 </div>
 
                 <div className="flex flex-col items-center gap-1 shrink-0">
                   <Swords size={20} className="text-slate-400" />
-                  <p className="text-[9px] uppercase tracking-widest text-slate-500 font-black">vs</p>
+                  <p className="text-[9px] uppercase tracking-widest text-slate-500 font-black">
+                    vs
+                  </p>
                 </div>
 
                 <div className="flex flex-col items-center gap-2 flex-1">
                   <img
-                    src={dicebearUrl(myOpponent?.name ?? "Unknown")}
-                    alt={myOpponent?.name}
+                    src={dicebearUrl(myMatchOpponent.name)}
+                    alt={myMatchOpponent.name}
                     className="h-16 w-16 rounded-full border-2 border-slate-600"
                   />
                   <p className="text-sm font-black text-white text-center">
-                    {myOpponent?.name ?? (myMatch?.playerA.id === participant.id ? myMatch.playerB.name : myMatch.playerA.name)}
+                    {myMatchOpponent.name}
                   </p>
                 </div>
               </div>
             </div>
           )}
 
+          {myMatch && opponentIsBye && (
+            <div className="mt-8 rounded-3xl border border-emerald-400/20 bg-emerald-950/10 p-6 text-center">
+              <p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-300 mb-2">
+                Bye — Round 1
+              </p>
+              <p className="text-sm text-slate-300">
+                No opponent this round. You advance automatically to the next
+                round.
+              </p>
+            </div>
+          )}
+
+          {state.phase === "seeding" && !iAmInBracket && (
+            <div className="mt-8 rounded-3xl border border-slate-700/30 bg-slate-900/20 p-6 text-center">
+              <p className="text-sm text-slate-400">
+                You're spectating this tournament — sit back and watch the
+                action unfold on the big screen.
+              </p>
+            </div>
+          )}
+
           <div className="mt-6 rounded-2xl border border-white/10 bg-white/[0.04] p-5">
             <p className="text-sm text-slate-300">
-              Stay on this page — your question will appear automatically when it's your turn to compete.
+              Stay on this page — your question will appear automatically when
+              it's your turn to compete.
             </p>
           </div>
         </section>
@@ -231,11 +342,33 @@ export function AudienceTournament({
 
   // ── BRACKET REVEAL / UPDATE: watching ────────────────────────────────────
   if (state.phase === "bracket-reveal" || state.phase === "bracket-update") {
+    const lastRound =
+      state.bracket?.rounds[state.bracket.rounds.length - 1] ?? [];
+    const myNextMatch = lastRound.find(
+      (m) =>
+        !m.winnerId &&
+        (m.playerA.id === participant.id || m.playerB.id === participant.id),
+    );
+
+    const roundLabel = getRoundLabel(
+      (state.bracket?.rounds.length ?? 1) - 1,
+      state.bracket?.totalRounds ?? 1,
+    );
+
+    const opponent = myNextMatch
+      ? myNextMatch.playerA.id === participant.id
+        ? myNextMatch.playerB
+        : myNextMatch.playerA
+      : null;
+    const opponentIsBye = opponent?.name === "BYE";
+
     return (
       <main className="min-h-screen bg-[#07080b] px-5 py-8 text-white">
         <section className="mx-auto max-w-md">
           <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-cyan-400/25 bg-cyan-400/10 px-4 py-2 text-xs font-bold uppercase tracking-wider text-cyan-200">
-            {state.phase === "bracket-update" ? "Round Advancing" : "Bracket Drawn"}
+            {state.phase === "bracket-update"
+              ? "Round Advancing"
+              : "Bracket Drawn"}
           </div>
 
           <h1 className="text-3xl font-black">
@@ -245,50 +378,59 @@ export function AudienceTournament({
             Watch the big screen — your match will begin soon.
           </p>
 
-          {/* My next potential match */}
-          {(() => {
-            const lastRound = state.bracket?.rounds[state.bracket.rounds.length - 1] ?? [];
-            const myNextMatch = lastRound.find(
-              (m) => !m.winnerId && (m.playerA.id === participant.id || m.playerB.id === participant.id),
-            );
+          {!myNextMatch && (
+            <div className="mt-6 rounded-2xl border border-white/10 bg-white/[0.04] p-5">
+              <p className="text-sm text-slate-400">
+                You've been eliminated or are already a winner. Watch the
+                competition unfold on the main screen.
+              </p>
+            </div>
+          )}
 
-            if (!myNextMatch) return (
-              <div className="mt-6 rounded-2xl border border-white/10 bg-white/[0.04] p-5">
-                <p className="text-sm text-slate-400">
-                  You've been eliminated or are already a winner. Watch the competition unfold on the main screen.
-                </p>
-              </div>
-            );
+          {myNextMatch && opponentIsBye && (
+            <div className="mt-6 rounded-3xl border border-emerald-400/20 bg-emerald-950/10 p-6 text-center">
+              <p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-300 mb-2">
+                Bye — {roundLabel}
+              </p>
+              <p className="text-sm text-slate-300">
+                No opponent this round. You advance automatically.
+              </p>
+            </div>
+          )}
 
-            const opponent = myNextMatch.playerA.id === participant.id
-              ? myNextMatch.playerB
-              : myNextMatch.playerA;
-
-            const roundLabel = getRoundLabel(
-              (state.bracket?.rounds.length ?? 1) - 1,
-              state.bracket?.totalRounds ?? 1,
-            );
-
-            return (
-              <div className="mt-6 rounded-3xl border border-cyan-400/20 bg-[#10151f] p-6">
-                <p className="text-xs font-bold uppercase tracking-[0.2em] text-cyan-300 mb-4">
-                  Your Next Match · {roundLabel}
-                </p>
-                <div className="flex items-center gap-4">
-                  <div className="flex flex-col items-center gap-2 flex-1">
-                    <img src={dicebearUrl(participant.name)} alt="" className="h-14 w-14 rounded-full border-2 border-cyan-400" />
-                    <p className="text-sm font-black text-white">{participant.name}</p>
-                    <span className="text-[10px] text-cyan-400 font-bold uppercase tracking-wider">You</span>
-                  </div>
-                  <Swords size={18} className="text-slate-400 shrink-0" />
-                  <div className="flex flex-col items-center gap-2 flex-1">
-                    <img src={dicebearUrl(opponent.name)} alt="" className="h-14 w-14 rounded-full border-2 border-slate-600" />
-                    <p className="text-sm font-black text-white">{opponent.name}</p>
-                  </div>
+          {myNextMatch && opponent && !opponentIsBye && (
+            <div className="mt-6 rounded-3xl border border-cyan-400/20 bg-[#10151f] p-6">
+              <p className="text-xs font-bold uppercase tracking-[0.2em] text-cyan-300 mb-4">
+                Your Next Match · {roundLabel}
+              </p>
+              <div className="flex items-center gap-4">
+                <div className="flex flex-col items-center gap-2 flex-1">
+                  <img
+                    src={dicebearUrl(participant.name)}
+                    alt=""
+                    className="h-14 w-14 rounded-full border-2 border-cyan-400"
+                  />
+                  <p className="text-sm font-black text-white">
+                    {participant.name}
+                  </p>
+                  <span className="text-[10px] text-cyan-400 font-bold uppercase tracking-wider">
+                    You
+                  </span>
+                </div>
+                <Swords size={18} className="text-slate-400 shrink-0" />
+                <div className="flex flex-col items-center gap-2 flex-1">
+                  <img
+                    src={dicebearUrl(opponent.name)}
+                    alt=""
+                    className="h-14 w-14 rounded-full border-2 border-slate-600"
+                  />
+                  <p className="text-sm font-black text-white">
+                    {opponent.name}
+                  </p>
                 </div>
               </div>
-            );
-          })()}
+            </div>
+          )}
         </section>
       </main>
     );
@@ -297,10 +439,16 @@ export function AudienceTournament({
   // ── MATCH ACTIVE ──────────────────────────────────────────────────────────
   if (state.phase === "match-active" && state.currentQuestion) {
     const q = state.currentQuestion;
-    const timeLimit = q.timeLimit * 1000;
-    const timePct = timeLimit > 0 ? (timeLeft / timeLimit) * 100 : 0;
-    const secs = Math.ceil(timeLeft / 1000);
-    const roundLabel = getRoundLabel(roundIndex, state.bracket?.totalRounds ?? 1);
+    const timePct = isCountingDown
+      ? Math.min(100, Math.max(0, (msUntilStart / MATCH_COUNTDOWN_MS) * 100))
+      : timeLimitMs > 0
+        ? (timeLeft / timeLimitMs) * 100
+        : 0;
+    const secs = isCountingDown ? countdownSeconds : Math.ceil(timeLeft / 1000);
+    const roundLabel = getRoundLabel(
+      roundIndex,
+      state.bracket?.totalRounds ?? 1,
+    );
 
     // Spectator view — not my match
     if (!iAmCombatant) {
@@ -318,24 +466,51 @@ export function AudienceTournament({
 
                 <div className="mt-6 flex items-center gap-4">
                   <div className="flex flex-col items-center gap-2 flex-1">
-                    <img src={dicebearUrl(currentMatch.playerA.name)} alt="" className="h-16 w-16 rounded-full border-2 border-slate-600" />
-                    <p className="text-sm font-black text-white text-center">{currentMatch.playerA.name}</p>
+                    <img
+                      src={dicebearUrl(currentMatch.playerA.name)}
+                      alt=""
+                      className="h-16 w-16 rounded-full border-2 border-slate-600"
+                    />
+                    <p className="text-sm font-black text-white text-center">
+                      {currentMatch.playerA.name}
+                    </p>
                   </div>
                   <div className="flex flex-col items-center gap-2 shrink-0">
                     <Swords size={20} className="text-cyan-400" />
                     <TimeRing pct={timePct} seconds={secs} />
                   </div>
                   <div className="flex flex-col items-center gap-2 flex-1">
-                    <img src={dicebearUrl(currentMatch.playerB.name)} alt="" className="h-16 w-16 rounded-full border-2 border-slate-600" />
-                    <p className="text-sm font-black text-white text-center">{currentMatch.playerB.name}</p>
+                    <img
+                      src={dicebearUrl(currentMatch.playerB.name)}
+                      alt=""
+                      className="h-16 w-16 rounded-full border-2 border-slate-600"
+                    />
+                    <p className="text-sm font-black text-white text-center">
+                      {currentMatch.playerB.name}
+                    </p>
                   </div>
                 </div>
 
                 <div className="mt-6 rounded-2xl border border-white/10 bg-white/[0.04] p-5">
-                  <p className="text-xs text-slate-500 mb-2 font-bold uppercase tracking-wider">
-                    Question
-                  </p>
-                  <p className="text-sm text-slate-300 leading-6">{q.prompt}</p>
+                  {isCountingDown ? (
+                    <>
+                      <p className="text-xs text-slate-500 mb-2 font-bold uppercase tracking-wider">
+                        Starting In
+                      </p>
+                      <p className="text-sm text-slate-300 leading-6">
+                        The showdown begins in {countdownSeconds}…
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <p className="text-xs text-slate-500 mb-2 font-bold uppercase tracking-wider">
+                        Question
+                      </p>
+                      <p className="text-sm text-slate-300 leading-6">
+                        {q.prompt}
+                      </p>
+                    </>
+                  )}
                 </div>
 
                 <p className="mt-6 text-center text-sm text-slate-500">
@@ -354,16 +529,24 @@ export function AudienceTournament({
         <section className="mx-auto max-w-md">
           <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-cyan-400/25 bg-cyan-400/10 px-4 py-2 text-xs font-bold uppercase tracking-wider text-cyan-200">
             <Swords size={14} />
-            Your Turn · {roundLabel}
+            {isCountingDown ? "Get Ready" : "Your Turn"} · {roundLabel}
           </div>
 
           {/* Opponent callout */}
           {myOpponent && (
             <div className="mb-6 flex items-center gap-3 rounded-2xl border border-slate-700/40 bg-slate-900/30 px-4 py-3">
-              <img src={dicebearUrl(myOpponent.name)} alt="" className="h-10 w-10 rounded-full border border-slate-600" />
+              <img
+                src={dicebearUrl(myOpponent.name)}
+                alt=""
+                className="h-10 w-10 rounded-full border border-slate-600"
+              />
               <div>
-                <p className="text-[10px] text-slate-500 uppercase tracking-widest font-bold">You vs</p>
-                <p className="text-sm font-black text-white">{myOpponent.name}</p>
+                <p className="text-[10px] text-slate-500 uppercase tracking-widest font-bold">
+                  You vs
+                </p>
+                <p className="text-sm font-black text-white">
+                  {myOpponent.name}
+                </p>
               </div>
               <div className="ml-auto">
                 <TimeRing pct={timePct} seconds={secs} />
@@ -371,51 +554,70 @@ export function AudienceTournament({
             </div>
           )}
 
-          {/* Question */}
+          {/* Question / countdown */}
           <div className="rounded-3xl border border-cyan-400/20 bg-[#10151f] p-6">
-            <p className="text-xs font-bold uppercase tracking-[0.2em] text-cyan-300 mb-4">
-              Question
-            </p>
-            <h2 className="text-xl font-black leading-snug text-white mb-6">{q.prompt}</h2>
+            {isCountingDown ? (
+              <CountdownBurst
+                seconds={countdownSeconds}
+                label="Showdown starts in"
+              />
+            ) : (
+              <>
+                <p className="text-xs font-bold uppercase tracking-[0.2em] text-cyan-300 mb-4">
+                  Question
+                </p>
+                <h2 className="text-xl font-black leading-snug text-white mb-6">
+                  {q.prompt}
+                </h2>
 
-            <div className="space-y-3">
-              {q.options.map((option, idx) => {
-                const isMine = myVoteIndex === idx;
-                return (
-                  <button
-                    key={idx}
-                    onClick={() => submitAnswer(idx)}
-                    disabled={myVoteIndex !== null || timeLeft === 0}
-                    className={`flex w-full items-center gap-4 rounded-2xl border p-4 text-left transition active:scale-[0.98] disabled:active:scale-100 ${
-                      isMine
-                        ? "border-cyan-300/40 bg-cyan-300/10"
-                        : "border-white/10 bg-white/[0.05]"
-                    } ${myVoteIndex !== null && !isMine ? "opacity-40" : ""}`}
-                  >
-                    <span className={`grid h-9 w-9 shrink-0 place-items-center rounded-xl text-sm font-black ${
-                      isMine ? "bg-cyan-300/20 text-cyan-200" : "bg-white/10 text-slate-300"
-                    }`}>
-                      {optionLetters[idx]}
-                    </span>
-                    <span className="flex-1 font-semibold text-white">{option}</span>
-                    {isMine && (
-                      <span className="shrink-0 text-xs font-bold text-cyan-300">Your pick</span>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
+                <div className="space-y-3">
+                  {q.options.map((option, idx) => {
+                    const isMine = myVoteIndex === idx;
+                    return (
+                      <button
+                        key={idx}
+                        onClick={() => submitAnswer(idx)}
+                        disabled={myVoteIndex !== null || timeLeft === 0}
+                        className={`flex w-full items-center gap-4 rounded-2xl border p-4 text-left transition active:scale-[0.98] disabled:active:scale-100 ${
+                          isMine
+                            ? "border-cyan-300/40 bg-cyan-300/10"
+                            : "border-white/10 bg-white/[0.05]"
+                        } ${myVoteIndex !== null && !isMine ? "opacity-40" : ""}`}
+                      >
+                        <span
+                          className={`grid h-9 w-9 shrink-0 place-items-center rounded-xl text-sm font-black ${
+                            isMine
+                              ? "bg-cyan-300/20 text-cyan-200"
+                              : "bg-white/10 text-slate-300"
+                          }`}
+                        >
+                          {optionLetters[idx]}
+                        </span>
+                        <span className="flex-1 font-semibold text-white">
+                          {option}
+                        </span>
+                        {isMine && (
+                          <span className="shrink-0 text-xs font-bold text-cyan-300">
+                            Your pick
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
 
-            {myVoteIndex !== null && (
-              <p className="mt-5 text-center text-sm text-cyan-300">
-                Answer locked in. Waiting for result...
-              </p>
-            )}
+                {myVoteIndex !== null && (
+                  <p className="mt-5 text-center text-sm text-cyan-300">
+                    Answer locked in. Waiting for result...
+                  </p>
+                )}
 
-            {myVoteIndex === null && timeLeft === 0 && (
-              <p className="mt-5 text-center text-sm text-red-400">
-                Time's up! No answer submitted.
-              </p>
+                {myVoteIndex === null && timeLeft === 0 && (
+                  <p className="mt-5 text-center text-sm text-red-400">
+                    Time's up! No answer submitted.
+                  </p>
+                )}
+              </>
             )}
           </div>
         </section>
@@ -427,7 +629,9 @@ export function AudienceTournament({
   if (state.phase === "match-result" && currentMatch && iAmCombatant) {
     const q = state.currentQuestion;
     const myScore = currentMatch.scores[participant.id] ?? 0;
-    const opponentScore = myOpponent ? (currentMatch.scores[myOpponent.id] ?? 0) : 0;
+    const opponentScore = myOpponent
+      ? (currentMatch.scores[myOpponent.id] ?? 0)
+      : 0;
 
     return (
       <main className="min-h-screen bg-[#07080b] px-5 py-8 text-white">
@@ -439,7 +643,9 @@ export function AudienceTournament({
                 You Won!
               </div>
               <h1 className="text-4xl font-black text-white">You advance!</h1>
-              <p className="mt-2 text-emerald-300">Outstanding. Stay ready for your next match.</p>
+              <p className="mt-2 text-emerald-300">
+                Outstanding. Stay ready for your next match.
+              </p>
             </>
           ) : (
             <>
@@ -448,22 +654,44 @@ export function AudienceTournament({
                 Eliminated
               </div>
               <h1 className="text-4xl font-black text-white">Good effort!</h1>
-              <p className="mt-2 text-slate-400">The competition continues. Watch the rest unfold.</p>
+              <p className="mt-2 text-slate-400">
+                The competition continues. Watch the rest unfold.
+              </p>
             </>
           )}
 
           {/* Score comparison */}
           <div className="mt-8 flex gap-3">
-            <div className={`flex-1 rounded-2xl border p-4 text-center ${iWon ? "border-emerald-400/30 bg-emerald-950/20" : "border-slate-700/30 bg-slate-900/20"}`}>
-              <img src={dicebearUrl(participant.name)} alt="" className="h-12 w-12 rounded-full mx-auto mb-2" />
+            <div
+              className={`flex-1 rounded-2xl border p-4 text-center ${iWon ? "border-emerald-400/30 bg-emerald-950/20" : "border-slate-700/30 bg-slate-900/20"}`}
+            >
+              <img
+                src={dicebearUrl(participant.name)}
+                alt=""
+                className="h-12 w-12 rounded-full mx-auto mb-2"
+              />
               <p className="text-xs text-slate-400 font-bold">You</p>
               <p className="text-2xl font-black text-amber-300">{myScore}</p>
             </div>
-            <div className="text-slate-500 font-black text-sm self-center">vs</div>
-            <div className={`flex-1 rounded-2xl border p-4 text-center ${!iWon ? "border-emerald-400/30 bg-emerald-950/20" : "border-slate-700/30 bg-slate-900/20 opacity-60"}`}>
-              {myOpponent && <img src={dicebearUrl(myOpponent.name)} alt="" className="h-12 w-12 rounded-full mx-auto mb-2" />}
-              <p className="text-xs text-slate-400 font-bold">{myOpponent?.name}</p>
-              <p className="text-2xl font-black text-amber-300">{opponentScore}</p>
+            <div className="text-slate-500 font-black text-sm self-center">
+              vs
+            </div>
+            <div
+              className={`flex-1 rounded-2xl border p-4 text-center ${!iWon ? "border-emerald-400/30 bg-emerald-950/20" : "border-slate-700/30 bg-slate-900/20 opacity-60"}`}
+            >
+              {myOpponent && (
+                <img
+                  src={dicebearUrl(myOpponent.name)}
+                  alt=""
+                  className="h-12 w-12 rounded-full mx-auto mb-2"
+                />
+              )}
+              <p className="text-xs text-slate-400 font-bold">
+                {myOpponent?.name}
+              </p>
+              <p className="text-2xl font-black text-amber-300">
+                {opponentScore}
+              </p>
             </div>
           </div>
 
@@ -478,7 +706,8 @@ export function AudienceTournament({
               </p>
               {myVoteIndex !== null && myVoteIndex !== q.correctIndex && (
                 <p className="mt-1 text-[11px] text-red-300">
-                  You answered: {optionLetters[myVoteIndex]}: {q.options[myVoteIndex]}
+                  You answered: {optionLetters[myVoteIndex]}:{" "}
+                  {q.options[myVoteIndex]}
                 </p>
               )}
             </div>
@@ -528,8 +757,12 @@ export function AudienceTournament({
                   </div>
                 </div>
               </div>
-              <h1 className="text-5xl font-black text-white uppercase">Champion!</h1>
-              <p className="mt-3 text-amber-300 text-xl font-bold">You are the Cybersecurity Champion</p>
+              <h1 className="text-5xl font-black text-white uppercase">
+                Champion!
+              </h1>
+              <p className="mt-3 text-amber-300 text-xl font-bold">
+                You are the Cybersecurity Champion
+              </p>
               <p className="mt-4 text-slate-500 text-sm">
                 You've proven your knowledge across all rounds. Well done!
               </p>
@@ -547,7 +780,9 @@ export function AudienceTournament({
                       alt={champion.name}
                       className="h-16 w-16 rounded-full border-2 border-amber-400"
                     />
-                    <p className="text-2xl font-black text-amber-300">{champion.name}</p>
+                    <p className="text-2xl font-black text-amber-300">
+                      {champion.name}
+                    </p>
                   </div>
                 </>
               )}

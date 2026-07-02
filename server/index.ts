@@ -5,12 +5,13 @@ import { Server } from "socket.io";
 import os from "os";
 import crypto from "crypto";
 
-import type {
-  TournamentState,
-  TournamentParticipant,
-  TournamentMatch,
-  TournamentBracket,
-  TournamentAnswer,
+import {
+  type TournamentState,
+  type TournamentParticipant,
+  type TournamentMatch,
+  type TournamentBracket,
+  type TournamentAnswer,
+  MATCH_COUNTDOWN_MS,
 } from "../src/shared/types/Tournament";
 import { QUESTION_BANK, pickRandomQuestions } from "../src/data/questionBank";
 
@@ -122,7 +123,6 @@ let tournament: TournamentState = {
   participants: [],
   usedQuestionIds: [],
 };
-
 // ── Socket.IO ─────────────────────────────────────────────────────────────────
 
 const io = new Server(server, {
@@ -164,27 +164,29 @@ function shuffleArray<T>(arr: T[]): T[] {
   return a;
 }
 
-function buildBracket(participants: TournamentParticipant[]): TournamentBracket {
+function buildBracket(
+  participants: TournamentParticipant[],
+): TournamentBracket {
   const shuffled = shuffleArray(participants);
+  const n = shuffled.length;
 
   let size = 1;
-  while (size < shuffled.length) size *= 2;
+  while (size < n) size *= 2;
 
-  const padded: (TournamentParticipant | null)[] = [
-    ...shuffled,
-    ...Array(size - shuffled.length).fill(null),
-  ];
-
+  const numMatches = size / 2;
+  const numByes = size - n;
   const firstRound: TournamentMatch[] = [];
-  for (let i = 0; i < padded.length; i += 2) {
-    const a = padded[i];
-    const b = padded[i + 1];
-    if (!a) continue;
+  let playerIdx = 0;
+
+  for (let i = 0; i < numMatches; i++) {
+    const a = shuffled[playerIdx++];
+    const isByeMatch = i < numByes;
+    const b = isByeMatch ? null : shuffled[playerIdx++];
 
     const assignedQs = pickRandomQuestions(QUESTIONS_PER_MATCH);
     const questionIds = assignedQs.map((q) => q.id);
 
-    const match: TournamentMatch = {
+    firstRound.push({
       id: crypto.randomUUID(),
       round: 0,
       matchIndex: firstRound.length,
@@ -194,8 +196,7 @@ function buildBracket(participants: TournamentParticipant[]): TournamentBracket 
       questionIds,
       questionsCompleted: 0,
       winnerId: !b ? a.id : undefined,
-    };
-    firstRound.push(match);
+    });
   }
 
   return {
@@ -253,14 +254,21 @@ function scoreQuestion(
       continue;
     }
     const elapsed = answer.answeredAt - matchStartedAt;
-    const speedBonus = Math.max(0, Math.round(500 * (1 - elapsed / timeLimitMs)));
-    newScores[answer.participantId] = (newScores[answer.participantId] ?? 0) + 1000 + speedBonus;
+    const speedBonus = Math.max(
+      0,
+      Math.round(500 * (1 - elapsed / timeLimitMs)),
+    );
+    newScores[answer.participantId] =
+      (newScores[answer.participantId] ?? 0) + 1000 + speedBonus;
   }
 
   return newScores;
 }
 
-function patchMatch(t: TournamentState, updatedMatch: TournamentMatch): TournamentState {
+function patchMatch(
+  t: TournamentState,
+  updatedMatch: TournamentMatch,
+): TournamentState {
   const updatedRounds = t.bracket!.rounds.map((round) =>
     round.map((m) => (m.id === updatedMatch.id ? updatedMatch : m)),
   );
@@ -324,7 +332,6 @@ function advanceBracket(t: TournamentState): TournamentState {
 // ── Connection handler ────────────────────────────────────────────────────────
 
 io.on("connection", (socket) => {
-
   // ── Initial state sync ──────────────────────────────────────────────────
   socket.emit("state:update", state);
   socket.emit("question:update", activeQuestion);
@@ -336,6 +343,9 @@ io.on("connection", (socket) => {
   socket.emit("participants:update", joinedParticipants);
   // Emitted last so the client has all other state before it triggers UI transitions
   socket.emit("tournament:state", tournament);
+  socket.on("tournament:scroll", (payload) => {
+    socket.broadcast.emit("tournament:scroll", payload);
+  });
 
   // ── Scene video relay ───────────────────────────────────────────────────
   socket.on("scene:video", (payload) => {
@@ -385,7 +395,12 @@ io.on("connection", (socket) => {
     }
 
     if (command === "reset") {
-      state = { currentSlide: 0, revealStep: 0, sceneStep: 0, mode: "presenting" };
+      state = {
+        currentSlide: 0,
+        revealStep: 0,
+        sceneStep: 0,
+        mode: "presenting",
+      };
     }
 
     io.emit("state:update", state);
@@ -480,7 +495,10 @@ io.on("connection", (socket) => {
         return {
           ...answer,
           category: payload.category ?? answer.category,
-          visible: typeof payload.visible === "boolean" ? payload.visible : answer.visible,
+          visible:
+            typeof payload.visible === "boolean"
+              ? payload.visible
+              : answer.visible,
         };
       });
       io.emit("answers:update", answers);
@@ -551,7 +569,10 @@ io.on("connection", (socket) => {
       pinned?: boolean;
     }) => {
       if (payload.pinned === true) {
-        audienceQuestions = audienceQuestions.map((q) => ({ ...q, pinned: false }));
+        audienceQuestions = audienceQuestions.map((q) => ({
+          ...q,
+          pinned: false,
+        }));
       }
 
       audienceQuestions = audienceQuestions.map((q) => {
@@ -559,7 +580,8 @@ io.on("connection", (socket) => {
         return {
           ...q,
           status: payload.status ?? q.status,
-          pinned: typeof payload.pinned === "boolean" ? payload.pinned : q.pinned,
+          pinned:
+            typeof payload.pinned === "boolean" ? payload.pinned : q.pinned,
         };
       });
 
@@ -620,14 +642,20 @@ io.on("connection", (socket) => {
         !Number.isInteger(payload.optionIndex) ||
         payload.optionIndex < 0 ||
         payload.optionIndex >= activeQuiz.options.length
-      ) return;
+      )
+        return;
 
       const existingIndex = quizVotes.findIndex(
-        (v) => v.quizId === payload.quizId && v.participantId === payload.participantId,
+        (v) =>
+          v.quizId === payload.quizId &&
+          v.participantId === payload.participantId,
       );
 
       const vote: QuizVote = {
-        id: existingIndex >= 0 ? quizVotes[existingIndex].id : crypto.randomUUID(),
+        id:
+          existingIndex >= 0
+            ? quizVotes[existingIndex].id
+            : crypto.randomUUID(),
         quizId: payload.quizId,
         participantId: payload.participantId,
         participantName: normalizeName(payload.participantName),
@@ -651,7 +679,10 @@ io.on("connection", (socket) => {
   });
 
   socket.on("quiz:reveal", () => {
-    if (activeQuiz) { activeQuiz.isOpen = false; activeQuiz.revealed = true; }
+    if (activeQuiz) {
+      activeQuiz.isOpen = false;
+      activeQuiz.revealed = true;
+    }
     io.emit("quiz:update", activeQuiz);
   });
 
@@ -673,10 +704,12 @@ io.on("connection", (socket) => {
   socket.on(
     "tournament:init",
     (participantList: { id: string; name: string }[]) => {
-      const participants: TournamentParticipant[] = participantList.map((p) => ({
-        id: p.id,
-        name: normalizeName(p.name),
-      }));
+      const participants: TournamentParticipant[] = participantList.map(
+        (p) => ({
+          id: p.id,
+          name: normalizeName(p.name),
+        }),
+      );
 
       const bracket = buildBracket(participants);
       const allFirstRoundQIds = bracket.rounds[0].flatMap((m) => m.questionIds);
@@ -718,28 +751,31 @@ io.on("connection", (socket) => {
       const question = buildNextQuestion(match, 1, timeLimit);
       if (!question) return;
 
+      const matchStartedAt = Date.now() + MATCH_COUNTDOWN_MS;
+
       tournament = {
         ...tournament,
         phase: "match-active",
         currentMatchId: payload.matchId,
-        // Clear the previous "just advanced" winner once a new match
-        // actually starts, so the WinnerAdvanceOverlay doesn't replay
-        // stale animations on a later bracket-update.
         lastCompletedMatchId: null,
         currentQuestion: question,
         matchAnswers: [],
         allMatchAnswers: [],
-        matchStartedAt: Date.now(),
+        matchStartedAt,
       };
 
       io.emit("tournament:state", tournament);
 
       const matchId = payload.matchId;
+      // Delay off matchStartedAt (not Date.now()) so the real answer window
+      // always matches what the countdown ring promises on screen, even if
+      // there's any delay between this handler running and now.
+      const delay = matchStartedAt + question.timeLimit * 1000 - Date.now();
       setTimeout(() => {
         if (tournament.currentMatchId !== matchId) return;
         if (tournament.phase !== "match-active") return;
         io.emit("tournament:time-up", { matchId });
-      }, question.timeLimit * 1000);
+      }, delay);
     },
   );
 
@@ -753,10 +789,18 @@ io.on("connection", (socket) => {
       if (
         tournament.phase !== "match-active" ||
         !tournament.currentQuestion ||
-        tournament.currentQuestion.id !== payload.questionId
-      ) return;
+        tournament.currentQuestion.id !== payload.questionId ||
+        !tournament.matchStartedAt ||
+        Date.now() < tournament.matchStartedAt
+      )
+        return;
 
-      if (tournament.matchAnswers.some((a) => a.participantId === payload.participantId)) return;
+      if (
+        tournament.matchAnswers.some(
+          (a) => a.participantId === payload.participantId,
+        )
+      )
+        return;
 
       const answer: TournamentAnswer = {
         participantId: payload.participantId,
@@ -777,7 +821,8 @@ io.on("connection", (socket) => {
 
   socket.on("tournament:resolve-question", () => {
     const match = getCurrentMatch(tournament);
-    if (!match || !tournament.currentQuestion || !tournament.matchStartedAt) return;
+    if (!match || !tournament.currentQuestion || !tournament.matchStartedAt)
+      return;
 
     const q = tournament.currentQuestion;
 
@@ -795,12 +840,14 @@ io.on("connection", (socket) => {
       questionsCompleted: match.questionsCompleted + 1,
     };
 
-    const isLastQuestion = updatedMatch.questionsCompleted >= QUESTIONS_PER_MATCH;
+    const isLastQuestion =
+      updatedMatch.questionsCompleted >= QUESTIONS_PER_MATCH;
 
     if (isLastQuestion) {
       const aScore = updatedScores[match.playerA.id] ?? 0;
       const bScore = updatedScores[match.playerB.id] ?? 0;
-      updatedMatch.winnerId = aScore >= bScore ? match.playerA.id : match.playerB.id;
+      updatedMatch.winnerId =
+        aScore >= bScore ? match.playerA.id : match.playerB.id;
     }
 
     tournament = patchMatch(
@@ -824,23 +871,24 @@ io.on("connection", (socket) => {
     const timeLimit = payload?.timeLimit ?? DEFAULT_TIME_LIMIT;
     const question = buildNextQuestion(match, nextNumber, timeLimit);
     if (!question) return;
-
+    const matchStartedAt = Date.now() + MATCH_COUNTDOWN_MS;
     tournament = {
       ...tournament,
       phase: "match-active",
       currentQuestion: question,
       matchAnswers: [],
-      matchStartedAt: Date.now(),
+      matchStartedAt: matchStartedAt,
     };
 
     io.emit("tournament:state", tournament);
 
     const questionId = question.id;
+    const delay = matchStartedAt + question.timeLimit * 1000 - Date.now();
     setTimeout(() => {
       if (tournament.currentQuestion?.id !== questionId) return;
       if (tournament.phase !== "match-active") return;
       io.emit("tournament:time-up", { matchId: tournament.currentMatchId });
-    }, question.timeLimit * 1000);
+    }, delay);
   });
 
   socket.on("tournament:advance", () => {

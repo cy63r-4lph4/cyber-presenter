@@ -86,6 +86,10 @@ function send(command: string) {
 }
 
 const questionTemplates = [
+  "What would you do first when you receive a suspicious login alert?",
+
+  "Which treat vector layer is your weakest wall?",
+
   "What red flags would make you suspect this is a phishing attempt?",
   "What would you do before clicking a link in a suspicious email?",
   "Why is password reuse dangerous?",

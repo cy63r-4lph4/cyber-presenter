@@ -1,3 +1,4 @@
+export const MATCH_COUNTDOWN_MS = 3000;
 export type TournamentParticipant = {
   id: string;
   name: string;
@@ -11,8 +12,8 @@ export type TournamentMatch = {
   playerB: TournamentParticipant;
   winnerId?: string;
   scores: Record<string, number>; // cumulative across all questions in this match
-  questionIds: string[];          // IDs of questions assigned to this match
-  questionsCompleted: number;     // how many of the 3 questions have been resolved
+  questionIds: string[]; // IDs of questions assigned to this match
+  questionsCompleted: number; // how many of the 3 questions have been resolved
 };
 
 export type TournamentBracket = {
@@ -38,9 +39,9 @@ export type TournamentAnswer = {
 };
 
 export type TournamentPhase =
-  | "idle"       // server default, Display shows nothing tournament-related
-  | "lobby"      // presenter activated arena — Display shows the idle arena screen
-  | "seeding"    // bracket drawn, matchup cards animating in
+  | "idle" // server default, Display shows nothing tournament-related
+  | "lobby" // presenter activated arena — Display shows the idle arena screen
+  | "seeding" // bracket drawn, matchup cards animating in
   | "bracket-reveal"
   | "match-active"
   | "question-result"
@@ -52,7 +53,7 @@ export type TournamentState = {
   phase: TournamentPhase;
   bracket: TournamentBracket | null;
   currentMatchId: string | null;
-  lastCompletedMatchId: string | null;   // ← add this
+  lastCompletedMatchId: string | null; // ← add this
   currentQuestion: TournamentQuestion | null;
   matchAnswers: TournamentAnswer[];
   allMatchAnswers: TournamentAnswer[];
@@ -66,7 +67,7 @@ export const TOURNAMENT_INITIAL_STATE: TournamentState = {
   phase: "idle",
   bracket: null,
   currentMatchId: null,
-  lastCompletedMatchId: null,   // ← add this
+  lastCompletedMatchId: null, // ← add this
   currentQuestion: null,
   matchAnswers: [],
   allMatchAnswers: [],

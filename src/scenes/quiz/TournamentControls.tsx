@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Trophy,
   Play,
@@ -12,6 +12,8 @@ import {
   Timer,
   Hash,
   AlertCircle,
+  Move,
+  Crosshair,
 } from "lucide-react";
 import { socket } from "../../socket";
 import type {
@@ -24,6 +26,10 @@ import { usePersistedState } from "../../hooks/usePersistedState";
 
 const QUESTIONS_PER_MATCH = 3;
 const DEFAULT_TIME_LIMIT = 20;
+
+// Must match MATCH_COUNTDOWN_MS in AudienceTournament.tsx / TournamentScene.tsx
+// and whatever the server adds to `matchStartedAt`. Used here only to keep
+// the presenter from ending/scoring a question before it's actually live.
 
 function vibrate() {
   if ("vibrate" in navigator) navigator.vibrate(14);
@@ -105,6 +111,99 @@ function TimeLimitSlider({
   );
 }
 
+function ScrollPad() {
+  const lastPos = useRef<{ x: number; y: number } | null>(null);
+  const [active, setActive] = useState(false);
+
+  function handlePointerDown(e: React.PointerEvent) {
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    lastPos.current = { x: e.clientX, y: e.clientY };
+    setActive(true);
+  }
+
+  function handlePointerMove(e: React.PointerEvent) {
+    if (!lastPos.current) return;
+    const dx = e.clientX - lastPos.current.x;
+    const dy = e.clientY - lastPos.current.y;
+    lastPos.current = { x: e.clientX, y: e.clientY };
+
+    const SENSITIVITY = 2.2;
+    socket.emit("tournament:scroll", {
+      dx: -dx * SENSITIVITY,
+      dy: -dy * SENSITIVITY,
+    });
+  }
+
+  function handlePointerUp(e: React.PointerEvent) {
+    lastPos.current = null;
+    setActive(false);
+    try {
+      (e.target as HTMLElement).releasePointerCapture(e.pointerId);
+    } catch {
+      // already released
+    }
+  }
+
+  function recenter() {
+    socket.emit("tournament:scroll", { reset: true });
+    vibrate();
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1.5">
+          <Move size={11} className="text-cyan-400" />
+          Pan Display
+        </p>
+        <button
+          onClick={recenter}
+          className="flex items-center gap-1 rounded-md border border-slate-700 bg-slate-900/40 px-2 py-1 text-[9px] font-bold uppercase tracking-wider text-slate-400 active:scale-95"
+        >
+          <Crosshair size={10} />
+          Recenter
+        </button>
+      </div>
+
+      <div
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
+        className={`relative h-32 w-full touch-none select-none overflow-hidden rounded-2xl border transition-colors ${
+          active
+            ? "border-cyan-400/60 bg-cyan-950/20"
+            : "border-slate-800 bg-slate-900/20"
+        }`}
+        style={{
+          backgroundImage:
+            "linear-gradient(rgba(34,211,238,0.08) 1px, transparent 1px), linear-gradient(90deg, rgba(34,211,238,0.08) 1px, transparent 1px)",
+          backgroundSize: "16px 16px",
+        }}
+      >
+        <div className="absolute top-1 left-1 h-2 w-2 border-t border-l border-cyan-400/40" />
+        <div className="absolute top-1 right-1 h-2 w-2 border-t border-r border-cyan-400/40" />
+        <div className="absolute bottom-1 left-1 h-2 w-2 border-b border-l border-cyan-400/40" />
+        <div className="absolute bottom-1 right-1 h-2 w-2 border-b border-r border-cyan-400/40" />
+
+        <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-1">
+          <Move
+            size={18}
+            className={active ? "text-cyan-300" : "text-slate-600"}
+          />
+          <p
+            className={`text-[9px] font-black uppercase tracking-[0.2em] ${
+              active ? "text-cyan-300" : "text-slate-600"
+            }`}
+          >
+            {active ? "Panning…" : "Drag to Scroll"}
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function TournamentControls() {
   // Server-authoritative state — always restored via socket on reconnect
   const [state, setState] = useState<TournamentState>(TOURNAMENT_INITIAL_STATE);
@@ -127,6 +226,10 @@ export function TournamentControls() {
 
   // Convert the persisted array back to a Set for O(1) lookups
   const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+
+  // Ticks while a match is active so the "Score Question" button can tell
+  // whether we're still inside the pre-match countdown (see matchStartedAt).
+  const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
     function handleTournamentState(incoming: TournamentState) {
@@ -193,6 +296,21 @@ export function TournamentControls() {
     return null;
   }, [bracket, state.currentMatchId]);
 
+  useEffect(() => {
+    if (phase !== "match-active" || !state.matchStartedAt) return;
+    setNow(Date.now());
+    const id = setInterval(() => setNow(Date.now()), 200);
+    return () => clearInterval(id);
+  }, [phase, state.currentQuestion?.id, state.matchStartedAt]);
+
+  const isCountingDown =
+    phase === "match-active" &&
+    !!state.matchStartedAt &&
+    now < state.matchStartedAt;
+  const countdownSeconds = isCountingDown
+    ? Math.max(1, Math.ceil((state.matchStartedAt! - now) / 1000))
+    : 0;
+
   const champion = state.participants.find((p) => p.id === state.championId);
   const roundIndex = bracket ? bracket.rounds.length - 1 : 0;
   const totalRounds = bracket?.totalRounds ?? 1;
@@ -231,6 +349,7 @@ export function TournamentControls() {
   }
 
   function resolveQuestion() {
+    if (isCountingDown) return;
     socket.emit("tournament:resolve-question");
     vibrate();
   }
@@ -400,6 +519,8 @@ export function TournamentControls() {
             Bracket Draw
           </p>
         </div>
+        <ScrollPad />
+
         <div className="rounded-xl border border-cyan-500/20 bg-cyan-950/20 p-3">
           <p className="text-[10px] text-cyan-300 font-bold uppercase tracking-wider mb-2 animate-pulse">
             // Drawing in progress on Display
@@ -465,6 +586,8 @@ export function TournamentControls() {
             {roundLabel} — Select Match
           </p>
         </div>
+        <ScrollPad />
+
         <div className="space-y-2">
           {pendingMatches.map((match) => (
             <button
@@ -537,7 +660,7 @@ export function TournamentControls() {
         <div className="flex items-center gap-2 border-b border-slate-800/80 pb-3">
           <Swords size={14} className="text-cyan-400 animate-pulse" />
           <p className="text-[10px] font-black uppercase tracking-[0.2em] text-cyan-400">
-            Showdown Live
+            {isCountingDown ? "Starting…" : "Showdown Live"}
           </p>
           <span className="ml-auto text-[10px] text-slate-500">
             Q{q?.questionNumber}/{QUESTIONS_PER_MATCH} · {answeredCount}/2
@@ -581,10 +704,15 @@ export function TournamentControls() {
         )}
         <button
           onClick={resolveQuestion}
-          className={`flex w-full items-center justify-center gap-2 rounded-2xl px-4 py-3 text-xs font-black active:scale-[0.98] ${bothAnswered ? "bg-emerald-300 text-slate-950" : "bg-amber-400/20 text-amber-300 border border-amber-400/30"}`}
+          disabled={isCountingDown}
+          className={`flex w-full items-center justify-center gap-2 rounded-2xl px-4 py-3 text-xs font-black active:scale-[0.98] disabled:opacity-40 disabled:active:scale-100 ${bothAnswered ? "bg-emerald-300 text-slate-950" : "bg-amber-400/20 text-amber-300 border border-amber-400/30"}`}
         >
           <SkipForward size={14} />
-          {bothAnswered ? "Score Question" : "End & Score Now"}
+          {isCountingDown
+            ? `Starting in ${countdownSeconds}…`
+            : bothAnswered
+              ? "Score Question"
+              : "End & Score Now"}
         </button>
       </div>
     );
