@@ -54,7 +54,10 @@ import {
   XCircle,
   Shield,
 } from "lucide-react";
-import { MATCH_COUNTDOWN_MS, type TournamentState } from "../../shared/types/Tournament";
+import {
+  MATCH_COUNTDOWN_MS,
+  type TournamentState,
+} from "../../shared/types/Tournament";
 import { socket } from "../../socket";
 
 type Participant = {
@@ -63,8 +66,6 @@ type Participant = {
 };
 
 const optionLetters = ["A", "B", "C", "D"];
-
-
 
 function dicebearUrl(name: string) {
   return `https://api.dicebear.com/7.x/adventurer/svg?seed=${encodeURIComponent(name)}&backgroundColor=0f172a&radius=50`;
@@ -154,7 +155,6 @@ export function AudienceTournament({
   participant: Participant;
 }) {
   const [myVoteIndex, setMyVoteIndex] = useState<number | null>(null);
-  const [now, setNow] = useState(() => Date.now());
 
   // Reset vote when a new match/question starts
   const questionId = state.currentQuestion?.id;
@@ -165,24 +165,36 @@ export function AudienceTournament({
   // Single ticking clock drives both the pre-match countdown and the
   // in-question answer timer — see the file header for how matchStartedAt
   // is used to distinguish the two.
-  useEffect(() => {
-    if (state.phase !== "match-active" || !state.matchStartedAt) return;
+  const [, setTick] = useState(0);
 
-    setNow(Date.now());
-    const id = setInterval(() => setNow(Date.now()), 100);
-    return () => clearInterval(id);
-  }, [questionId, state.matchStartedAt, state.phase]);
+useEffect(() => {
+  if (state.phase !== "match-active" || !state.matchStartedAt) return;
+  const id = setInterval(() => setTick((t) => t + 1), 100);
+  return () => clearInterval(id);
+}, [questionId, state.matchStartedAt, state.phase]);
 
   const timeLimitMs = state.currentQuestion
     ? state.currentQuestion.timeLimit * 1000
     : 0;
-  const msUntilStart = state.matchStartedAt ? state.matchStartedAt - now : 0;
+  const msUntilStart = state.matchStartedAt
+    ? state.matchStartedAt - Date.now()
+    : 0;
+  console.log(
+    "msUntilStart",
+    msUntilStart,
+    "matchStartedAt",
+    state.matchStartedAt,
+    "now",
+    Date.now(),
+  );
   const isCountingDown = msUntilStart > 0;
   const countdownSeconds = Math.max(1, Math.ceil(msUntilStart / 1000));
   const matchEndAt = state.matchStartedAt
     ? state.matchStartedAt + timeLimitMs
     : 0;
-  const timeLeft = isCountingDown ? timeLimitMs : Math.max(0, matchEndAt - now);
+  const timeLeft = isCountingDown
+    ? timeLimitMs
+    : Math.max(0, matchEndAt - Date.now());
 
   // Derived: am I a combatant in the current match?
   const currentMatch = useMemo(() => {

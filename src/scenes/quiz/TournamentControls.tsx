@@ -229,7 +229,6 @@ export function TournamentControls() {
 
   // Ticks while a match is active so the "Score Question" button can tell
   // whether we're still inside the pre-match countdown (see matchStartedAt).
-  const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
     function handleTournamentState(incoming: TournamentState) {
@@ -295,20 +294,20 @@ export function TournamentControls() {
     }
     return null;
   }, [bracket, state.currentMatchId]);
+  const [, setTick] = useState(0);
 
   useEffect(() => {
-    if (phase !== "match-active" || !state.matchStartedAt) return;
-    setNow(Date.now());
-    const id = setInterval(() => setNow(Date.now()), 200);
-    return () => clearInterval(id);
+    if (state.phase !== "match-active" || !state.matchStartedAt) return;
+  const id = setInterval(() => setTick((t) => t + 1), 100);
+  return () => clearInterval(id);
   }, [phase, state.currentQuestion?.id, state.matchStartedAt]);
 
   const isCountingDown =
     phase === "match-active" &&
     !!state.matchStartedAt &&
-    now < state.matchStartedAt;
+    Date.now() < state.matchStartedAt;
   const countdownSeconds = isCountingDown
-    ? Math.max(1, Math.ceil((state.matchStartedAt! - now) / 1000))
+    ? Math.max(1, Math.ceil((state.matchStartedAt! - Date.now()) / 1000))
     : 0;
 
   const champion = state.participants.find((p) => p.id === state.championId);

@@ -11,8 +11,6 @@ import { socket } from "../../socket";
 
 const optionLetters = ["A", "B", "C", "D"];
 
-
-
 function dicebearUrl(name: string, style = "adventurer") {
   const seed = encodeURIComponent(name);
   return `https://api.dicebear.com/7.x/${style}/svg?seed=${seed}&backgroundColor=0f172a&radius=50`;
@@ -775,8 +773,8 @@ function MatchArena({ state }: { state: TournamentState }) {
   // Single ticking clock drives both the pre-match countdown and the
   // in-question answer timer. See the MATCH_COUNTDOWN_MS / server note at
   // the top of this file and in AudienceTournament.tsx.
-  const [now, setNow] = useState<number>(() => Date.now());
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [, setTick] = useState(0);
 
   const match = useMemo(() => {
     if (!state.bracket || !state.currentMatchId) return null;
@@ -799,25 +797,27 @@ function MatchArena({ state }: { state: TournamentState }) {
   useEffect(() => {
     if (state.phase !== "match-active" || !state.matchStartedAt) return;
 
-    setNow(Date.now());
-    timerRef.current = setInterval(() => setNow(Date.now()), 100);
+    timerRef.current = setInterval(() => setTick((t) => t + 1), 100);
 
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
   }, [state.currentMatchId, state.currentQuestion?.id, state.matchStartedAt]);
-
   if (!match || !state.currentQuestion) return null;
 
   const q = state.currentQuestion;
   const timeLimitMs = q.timeLimit * 1000;
-  const msUntilStart = state.matchStartedAt ? state.matchStartedAt - now : 0;
+  const msUntilStart = state.matchStartedAt
+    ? state.matchStartedAt - Date.now()
+    : 0;
   const isCountingDown = msUntilStart > 0;
   const countdownSeconds = Math.max(1, Math.ceil(msUntilStart / 1000));
   const matchEndAt = state.matchStartedAt
     ? state.matchStartedAt + timeLimitMs
     : 0;
-  const timeLeft = isCountingDown ? timeLimitMs : Math.max(0, matchEndAt - now);
+  const timeLeft = isCountingDown
+    ? timeLimitMs
+    : Math.max(0, matchEndAt - Date.now());
   const timePct = isCountingDown
     ? Math.min(100, Math.max(0, (msUntilStart / MATCH_COUNTDOWN_MS) * 100))
     : timeLimitMs > 0
