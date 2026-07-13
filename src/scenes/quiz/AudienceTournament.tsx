@@ -179,14 +179,6 @@ useEffect(() => {
   const msUntilStart = state.matchStartedAt
     ? state.matchStartedAt - Date.now()
     : 0;
-  console.log(
-    "msUntilStart",
-    msUntilStart,
-    "matchStartedAt",
-    state.matchStartedAt,
-    "now",
-    Date.now(),
-  );
   const isCountingDown = msUntilStart > 0;
   const countdownSeconds = Math.max(1, Math.ceil(msUntilStart / 1000));
   const matchEndAt = state.matchStartedAt

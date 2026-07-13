@@ -14,7 +14,42 @@ const AMBIENT_VOLUME = 0.35;
 const FOCUS_VOLUME = 0.5;
 const FADE_MS = 1200;
 
-function fade(audio: HTMLAudioElement, to: number, ms: number) {
+function log(...args: unknown[]) {
+  console.log("[tournament-audio]", ...args);
+}
+
+function describe(label: string, audio: HTMLAudioElement) {
+  return `${label}: paused=${audio.paused} muted=${audio.muted} volume=${audio.volume.toFixed(2)} readyState=${audio.readyState} networkState=${audio.networkState} error=${audio.error ? audio.error.code : "none"}`;
+}
+
+// Idempotent — call this any time you want an element audible. Logs loudly
+// if play() keeps failing so a paused-but-faded-up element is never silent
+// without you knowing why.
+function ensurePlaying(audio: HTMLAudioElement, label: string) {
+  if (!audio.paused) return;
+  if (audio.error) {
+    log(`${label} has an error, cannot play`, audio.error);
+    return;
+  }
+  audio
+    .play()
+    .then(() =>
+      log(`${label} ensurePlaying() succeeded`, describe(label, audio)),
+    )
+    .catch((err) =>
+      log(`${label} ensurePlaying() FAILED`, err, describe(label, audio)),
+    );
+}
+
+const activeFades = new WeakMap<HTMLAudioElement, () => void>();
+
+function fade(audio: HTMLAudioElement, to: number, ms: number, label: string) {
+  activeFades.get(audio)?.();
+
+  // If we're fading UP, make sure the element is actually playing —
+  // this is the fix: volume alone is meaningless on a paused element.
+  if (to > 0) ensurePlaying(audio, label);
+
   const from = audio.volume;
   const steps = 24;
   const stepTime = ms / steps;
@@ -25,9 +60,14 @@ function fade(audio: HTMLAudioElement, to: number, ms: number) {
     if (i >= steps) {
       clearInterval(id);
       audio.volume = to;
+      activeFades.delete(audio);
+      log(`fade complete → ${label} = ${to}`, describe(label, audio));
     }
   }, stepTime);
-  return () => clearInterval(id);
+
+  const cancel = () => clearInterval(id);
+  activeFades.set(audio, cancel);
+  return cancel;
 }
 
 export function useTournamentAudio(phase: TournamentState["phase"]) {
@@ -35,8 +75,6 @@ export function useTournamentAudio(phase: TournamentState["phase"]) {
   const focusRef = useRef<HTMLAudioElement | null>(null);
   const [unlocked, setUnlocked] = useState(false);
 
-  // Create + immediately play both tracks MUTED. Muted autoplay is always
-  // allowed, so this never triggers a browser block — no gesture, no UI.
   useEffect(() => {
     const ambient = new Audio(AMBIENT_SRC);
     ambient.loop = true;
@@ -51,8 +89,31 @@ export function useTournamentAudio(phase: TournamentState["phase"]) {
     ambientRef.current = ambient;
     focusRef.current = focus;
 
-    ambient.play().catch(() => {});
-    focus.play().catch(() => {});
+    // Loudly report every unexpected pause so we can see WHY it stops,
+    // instead of finding out three log lines later via a stale volume fade.
+    const onPause = (label: string) => () =>
+      log(`${label} PAUSED unexpectedly`, new Error().stack);
+    ambient.addEventListener("pause", onPause("ambient"));
+    focus.addEventListener("pause", onPause("focus"));
+
+    const onError = (label: string) => (e: Event) =>
+      log(`${label} <audio> error event`, (e.target as HTMLAudioElement).error);
+    ambient.addEventListener("error", onError("ambient"));
+    focus.addEventListener("error", onError("focus"));
+
+    ambient
+      .play()
+      .then(() => log("ambient autoplay OK", describe("ambient", ambient)))
+      .catch((err) =>
+        log("ambient autoplay FAILED", err, describe("ambient", ambient)),
+      );
+
+    focus
+      .play()
+      .then(() => log("focus autoplay OK", describe("focus", focus)))
+      .catch((err) =>
+        log("focus autoplay FAILED", err, describe("focus", focus)),
+      );
 
     return () => {
       ambient.pause();
@@ -60,17 +121,16 @@ export function useTournamentAudio(phase: TournamentState["phase"]) {
     };
   }, []);
 
-  // Passive, invisible unlock — fires on literally any interaction with
-  // this document: a stray click while setting up the laptop, a physical
-  // clicker's keypress, anything. No UI, no prompt.
   useEffect(() => {
     if (unlocked) return;
     const unlock = () => {
       setUnlocked(true);
-      const ambient = ambientRef.current;
-      const focus = focusRef.current;
-      if (ambient) ambient.muted = false;
-      if (focus) focus.muted = false;
+      [ambientRef.current, focusRef.current].forEach((a, idx) => {
+        if (!a) return;
+        const label = idx === 0 ? "ambient" : "focus";
+        a.muted = false;
+        ensurePlaying(a, label);
+      });
       window.removeEventListener("pointerdown", unlock);
       window.removeEventListener("keydown", unlock);
     };
@@ -82,9 +142,6 @@ export function useTournamentAudio(phase: TournamentState["phase"]) {
     };
   }, [unlocked]);
 
-  // React to phase changes — same crossfade logic as before, just gated
-  // on `unlocked` for actually being audible (volume stays 0 until then,
-  // but that's fine, nothing to hear yet anyway).
   useEffect(() => {
     const ambient = ambientRef.current;
     const focus = focusRef.current;
@@ -92,19 +149,20 @@ export function useTournamentAudio(phase: TournamentState["phase"]) {
 
     const active = phase !== "idle";
     const showFocus = FOCUS_PHASES.has(phase);
+    log(`phase → ${phase}`, { active, showFocus });
 
     if (!active) {
-      fade(ambient, 0, FADE_MS);
-      fade(focus, 0, FADE_MS);
+      fade(ambient, 0, FADE_MS, "ambient");
+      fade(focus, 0, FADE_MS, "focus");
       return;
     }
 
     if (showFocus) {
-      fade(focus, FOCUS_VOLUME, FADE_MS);
-      fade(ambient, 0, FADE_MS);
+      fade(focus, FOCUS_VOLUME, FADE_MS, "focus");
+      fade(ambient, 0, FADE_MS, "ambient");
     } else {
-      fade(ambient, AMBIENT_VOLUME, FADE_MS);
-      fade(focus, 0, FADE_MS);
+      fade(ambient, AMBIENT_VOLUME, FADE_MS, "ambient");
+      fade(focus, 0, FADE_MS, "focus");
     }
   }, [phase]);
 

@@ -177,14 +177,23 @@ function buildBracket(
   const numByes = size - n;
   const firstRound: TournamentMatch[] = [];
   let playerIdx = 0;
+  const usedSoFar: string[] = []; // avoids overlapping question sets within round 1
 
   for (let i = 0; i < numMatches; i++) {
     const a = shuffled[playerIdx++];
     const isByeMatch = i < numByes;
     const b = isByeMatch ? null : shuffled[playerIdx++];
 
-    const assignedQs = pickRandomQuestions(QUESTIONS_PER_MATCH);
-    const questionIds = assignedQs.map((q) => q.id);
+    // Bye matches are decided instantly and never actually played — don't
+    // spend question inventory on them.
+    let questionIds: string[] = [];
+    if (!isByeMatch) {
+      const assignedQs = pickRandomQuestions(QUESTIONS_PER_MATCH, {
+        exclude: usedSoFar,
+      });
+      questionIds = assignedQs.map((q) => q.id);
+      usedSoFar.push(...questionIds);
+    }
 
     firstRound.push({
       id: crypto.randomUUID(),
@@ -301,10 +310,13 @@ function advanceBracket(t: TournamentState): TournamentState {
   );
 
   const nextRound: TournamentMatch[] = [];
+  const usedThisRound: string[] = [];
   for (let i = 0; i < winners.length; i += 2) {
     const assignedQs = pickRandomQuestions(QUESTIONS_PER_MATCH, {
-      exclude: t.usedQuestionIds,
+      exclude: [...t.usedQuestionIds, ...usedThisRound],
     });
+    const ids = assignedQs.map((q) => q.id);
+    usedThisRound.push(...ids);
     nextRound.push({
       id: crypto.randomUUID(),
       round: t.bracket.rounds.length,
@@ -312,7 +324,7 @@ function advanceBracket(t: TournamentState): TournamentState {
       playerA: winners[i],
       playerB: winners[i + 1],
       scores: {},
-      questionIds: assignedQs.map((q) => q.id),
+      questionIds: ids,
       questionsCompleted: 0,
     });
   }
@@ -752,6 +764,12 @@ io.on("connection", (socket) => {
       if (!question) return;
 
       const matchStartedAt = Date.now() + MATCH_COUNTDOWN_MS;
+      console.log(
+        `Tournament match ${payload.matchId} started @ ${new Date(matchStartedAt).toLocaleTimeString()}`,
+      );
+      console.log(
+        `Showdown Ends @ ${new Date(matchStartedAt + question.timeLimit * 1000).toLocaleTimeString()}`,
+      );
 
       tournament = {
         ...tournament,
